@@ -1,0 +1,141 @@
+format_string = "%a %b %d %H:%M:%S %z %Y"
+secondary_string = "%a %b %d %H: %M: %S %z %Y"
+
+df_T["dateTime"] = pd.to_datetime(df_T['timestamp'], format=format_string, errors='coerce')
+df_T["dateTime"] = df_T["dateTime"].fillna(pd.to_datetime(df_T['timestamp'], format=secondary_string, errors='coerce'))
+
+df_T.head()
+
+new_T = df_T.drop(columns=['timestamp'])
+
+new_T["secondsTime"] = new_T["dateTime"].map(pd.Timestamp.timestamp)
+
+day = 24*60*60
+week = 7*day
+
+new_T["Day sin"] = np.sin(new_T["secondsTime"] * (2 * np.pi / day))
+new_T["Day cos"] = np.cos(new_T["secondsTime"] * (2 * np.pi / day))
+new_T["Week sin"] = np.sin(new_T["secondsTime"] * (2 * np.pi / week))
+new_T["Week cos"] = np.cos(new_T["secondsTime"] * (2 * np.pi / week))
+
+new_T.head()
+
+newTime_T = new_T.drop(columns=['dateTime','secondsTime'])
+
+noID_T = newTime_T.drop(columns=['tweetId','userId'])
+
+noID_T["tweetTextBody"] = noID_T["tweetText"].apply(getTweetBodyFixed)
+
+noID_T[['Tweet language','Confidence']] = noID_T["tweetTextBody"].apply(lambda x: pd.Series(determineLanguage(x)))
+
+noID_T["Length"] = noID_T["tweetTextBody"].apply(lambda x: pd.Series(len(x)))
+
+noID_T["Confidence/Length"] = noID_T["Confidence"] / noID_T["Length"]
+
+noID_T['isEnglish'] = (noID_T['Tweet language'] == "ENGLISH").astype(int)
+
+noID_T['cleanedText'] = noID_T['tweetText'].apply(getCleanedTweetText)
+
+noID_T['Mentions'] = noID_T['cleanedText'].apply(getMentions)
+noID_T['Hashtags'] = noID_T['cleanedText'].apply(getHashtags)
+noID_T['Links'] = noID_T['cleanedText'].apply(getLinks)
+
+noID_T.head()
+
+supported = GoogleTranslator().get_supported_languages()
+
+available_T = list(map(low,noID_T['Tweet language'].unique()))
+
+res_T = np.setdiff1d(available_T, supported).tolist()
+
+noID_T['Tweet language'] = noID_T.apply(lambda row: row['Tweet language'] if row['Tweet language'] != 'CHINESE' else 'CHINESE (SIMPLIFIED)', axis=1)
+
+
+supportedUp_T = list(map(up, supported))
+noUnsupportedLanguages_T = noID_T[noID_T['Tweet language'].isin(supportedUp_T)].reset_index(drop=True)
+
+noUnsupportedLanguages_T['translatedTweetBody'] = noUnsupportedLanguages_T.apply(lambda row: row['tweetTextBody'] if row['isEnglish'] else GoogleTranslator(source=row['Tweet language'].lower(), target='english').translate(row['tweetTextBody']), axis=1)
+noUnsupportedLanguages_T.head()
+
+low_T = noUnsupportedLanguages_T
+low_T['translatedTweetBody'] = low_T['translatedTweetBody'].str.lower()
+
+low_T['translatedTweetBody'] = low_T['translatedTweetBody'].fillna('')
+
+low_T['tokens'] = low_T['translatedTweetBody'].apply(lambda text: nltk.word_tokenize(text) if text != '' else [])
+
+
+stop_words = set(stopwords.words('english'))
+
+low_T['Filtered tokens'] = low_T['tokens'].apply(lambda tokens: [token for token in tokens if token not in stop_words])
+
+porter = PorterStemmer()
+low_T['Stemmed tokens'] = low_T['Filtered tokens'].apply(lambda tokens: [porter.stem(token) for token in tokens])
+
+
+
+fakeOrReal = {
+    'fake': 1,
+    'humor': 1,
+    'real': 0
+}
+
+low_T['label'] = low_T['label'].replace(fakeOrReal)
+
+concise_T = low_T.drop(columns=['tweetText','imageId(s)','tweetTextBody','Tweet language','cleanedText','Links'])
+
+
+concise_T['Mentioned'] = concise_T['Mentions'].apply(lambda x: 1 if x.strip() != '' else 0)
+
+
+concise_T = concise_T.drop(columns=['Mentions'])
+
+concise_T['Stemmed tokens_str'] = concise_T['Stemmed tokens'].apply(lambda x: ' '.join(x))
+
+concise_T['Stemmed tokens_str'] = concise_T['Stemmed tokens_str'].apply(clean_string)
+
+vectorTest_T = tfidf_vectorizer.transform(concise_T['Stemmed tokens_str'])
+
+concise_T['HashCount'] = concise_T['Hashtags'].apply(lambda x: len(x.split(',')) if x != '' else 0)
+
+
+notags_T = concise_T.drop(columns=['Hashtags','Stemmed tokens','Filtered tokens','tokens','translatedTweetBody'])
+
+labels_T = notags_T['label']
+
+nonStandardFeatures_T = notags_T[['Day sin','Day cos','Week sin','Week cos', 'Confidence', 'Length', 'isEnglish', 'Mentioned']]
+
+standard_TFeatures_T = notags_T[['Confidence/Length', 'HashCount']]
+
+firstTestStandardized_T = scaler.transform(standard_TFeatures_T)
+
+standard_T = pd.DataFrame(firstTestStandardized_T, columns=standard_TFeatures_T.columns)
+
+together_T = pd.concat([nonStandardFeatures_T,standard_T],axis=1)
+
+
+vector_T = pd.DataFrame(vectorTest_T.toarray())
+vector_T.columns = vector_T.columns.astype(str)
+
+
+X_tfidf_selected_T = k_best.transform(vector_T)
+
+selected_features_mask = k_best.get_support()
+
+
+selectedVector_T = X_tfidf_selected_T
+
+alltogether_T = pd.concat([together_T,pd.DataFrame(selectedVector_T)],axis=1)
+
+alltogether_T['Length'] = alltogether_T['Length'].apply(tweetLength)
+
+alltogether_T.to_csv('Data/alltogether_T.csv', index=False)
+
+
+
+
+
+
+
+
+
